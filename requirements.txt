@@ -1,5 +1,22 @@
+# =============================================================
+# requirements.txt  |  iFood Case - Data Architect
+# -------------------------------------------------------------
 # Dependencias para execucao LOCAL opcional (fora do Databricks).
-# No Databricks Free Edition, PySpark e Delta ja vem pre-instalados.
+# No Databricks Free Edition, todas as bibliotecas abaixo ja
+# vem pre-instaladas — nao e necessario instalar nada.
+#
+# Para rodar localmente:
+#   pip install -r requirements.txt
+# =============================================================
 
+# Pipeline de dados
 pyspark==3.5.1
 delta-spark==3.2.0
+
+# Analise e visualizacao (notebook visual_analysis.ipynb)
+matplotlib==3.9.0
+pandas==2.2.2
+numpy==1.26.4
+
+# Geracao e validacao de notebooks
+nbformat==5.10.4
