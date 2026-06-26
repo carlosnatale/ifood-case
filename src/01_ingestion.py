@@ -1,12 +1,7 @@
 # =============================================================
-# 01_ingestion.py  |  iFood Case - Data Architect
+# src/01_ingestion.py  |  iFood Case - Data Architect
 # -------------------------------------------------------------
-# Etapa de INGESTAO (PySpark).
-#   Fonte TLC (Parquet) -> Landing Zone (Volume) -> Bronze (Delta)
-#
-# Atende ao requisito do case: "Deve utilizar PySpark em alguma etapa".
-# Ambiente: Databricks Free Edition (serverless).
-# Linguagem do notebook: Python.
+# Etapa PySpark: download -> landing zone -> Bronze (Delta).
 # =============================================================
 
 import os
@@ -15,62 +10,26 @@ import urllib.request
 from functools import reduce
 from pyspark.sql import functions as F
 
-# -------------------------------------------------------------
-# Celula 1 - Parametros
-# -------------------------------------------------------------
-LANDING = "/Volumes/ifood_case/bronze/landing"
-BASE_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data"
-MESES = ["2023-01", "2023-02", "2023-03", "2023-04", "2023-05"]
+LANDING     = "/Volumes/ifood_case/bronze/landing"
+BASE_URL    = "https://d37ci6vzurychx.cloudfront.net/trip-data"
+MESES       = ["2023-01", "2023-02", "2023-03", "2023-04", "2023-05"]
 TABELA_BRONZE = "ifood_case.bronze.yellow_tripdata_raw"
 
-# -------------------------------------------------------------
-# Celula 2 - Download para a landing zone (idempotente)
-#   O 'skip' evita baixar de novo arquivos que ja existem.
-#   Plano B: se a rede bloquear, faca upload manual pela UI
-#   (Catalog > Volume landing > Upload to volume) e pule esta celula.
-# -------------------------------------------------------------
+# --- Download idempotente ---
 os.makedirs(LANDING, exist_ok=True)
-
 for mes in MESES:
     arquivo = f"yellow_tripdata_{mes}.parquet"
     destino = f"{LANDING}/{arquivo}"
     if os.path.exists(destino):
-        print(f"[skip] {arquivo} ja existe")
-        continue
-    url = f"{BASE_URL}/{arquivo}"
-    print(f"[download] {url}")
-    urllib.request.urlretrieve(url, destino)
+        print(f"[skip] {arquivo} ja existe"); continue
+    urllib.request.urlretrieve(f"{BASE_URL}/{arquivo}", destino)
     print(f"[ok] {destino}")
+print("Landing:", os.listdir(LANDING))
 
-print("Arquivos na landing:", os.listdir(LANDING))
-
-# Saida real obtida:
-#   [skip] yellow_tripdata_2023-01.parquet ja existe
-#   [skip] yellow_tripdata_2023-02.parquet ja existe
-#   [skip] yellow_tripdata_2023-03.parquet ja existe
-#   [skip] yellow_tripdata_2023-04.parquet ja existe
-#   [skip] yellow_tripdata_2023-05.parquet ja existe
-#   Arquivos na landing: ['yellow_tripdata_2023-01.parquet', ... , '2023-05.parquet']
-
-# -------------------------------------------------------------
-# Celula 3 - Leitura com CAST EXPLICITO por arquivo + union
-# -------------------------------------------------------------
-# ARMADILHA REAL DO DATASET:
-#   Os Parquets do TLC tem tipos divergentes entre meses.
-#   passenger_count (e congestion_surcharge) vem como INT em
-#   alguns arquivos e DOUBLE em outros.
-#
-#   - Impor um schema na leitura NAO resolve: o leitor vetorizado
-#     do Spark recusa o cast INT32 -> DOUBLE e lanca
-#     SchemaColumnConvertNotSupportedException.
-#   - A config spark.sql.parquet.enableVectorizedReader = false
-#     NAO esta disponivel no runtime serverless da Free Edition
-#     (erro CONFIG_NOT_AVAILABLE.WITHOUT_SUGGESTION).
-#
-# SOLUCAO (robusta, sem depender de config de cluster):
-#   ler cada arquivo individualmente, aplicar .cast() explicito
-#   em todas as colunas e unir tudo com unionByName.
-# -------------------------------------------------------------
+# --- Cast explicito por arquivo (resolve conflito INT/DOUBLE entre meses) ---
+# Armadilha: passenger_count e congestion_surcharge variam entre INT e DOUBLE.
+# enableVectorizedReader=false nao disponivel no serverless da Free Edition.
+# Solucao: ler arquivo a arquivo, .cast() explicito, union.
 dfs = []
 for path in sorted(glob.glob(f"{LANDING}/yellow_tripdata_2023-*.parquet")):
     d = spark.read.parquet(path).select(
@@ -99,29 +58,15 @@ for path in sorted(glob.glob(f"{LANDING}/yellow_tripdata_2023-*.parquet")):
 
 df_raw = reduce(lambda a, b: a.unionByName(b), dfs)
 
-# Metadados de linhagem (boa pratica de governanca):
-#   registra QUANDO cada lote foi ingerido.
+# Metadados de linhagem
 df_bronze = df_raw.withColumn("_ingestao_ts", F.current_timestamp())
 
-# Gravacao da Bronze em Delta
-(
-    df_bronze.write
-    .format("delta")
-    .mode("overwrite")
-    .option("overwriteSchema", "true")
-    .saveAsTable(TABELA_BRONZE)
-)
+(df_bronze.write.format("delta").mode("overwrite")
+    .option("overwriteSchema", "true").saveAsTable(TABELA_BRONZE))
 
-total = spark.table(TABELA_BRONZE).count()
-print(f"\nBronze gravada em {TABELA_BRONZE}: {total} linhas")
+print(f"\nBronze gravada: {spark.table(TABELA_BRONZE).count()} linhas")
 
-# -------------------------------------------------------------
-# Resultado real obtido (contagem por arquivo e total da Bronze):
-#   [lido] yellow_tripdata_2023-01.parquet: 3066766 linhas
-#   [lido] yellow_tripdata_2023-02.parquet: 2913955 linhas
-#   [lido] yellow_tripdata_2023-03.parquet: 3403766 linhas
-#   [lido] yellow_tripdata_2023-04.parquet: 3288250 linhas
-#   [lido] yellow_tripdata_2023-05.parquet: 3513649 linhas
-#
+# Resultado real:
+#   [lido] 2023-01: 3066766 | 2023-02: 2913955 | 2023-03: 3403766
+#   [lido] 2023-04: 3288250 | 2023-05: 3513649
 #   Bronze gravada: 16186386 linhas
-# -------------------------------------------------------------
